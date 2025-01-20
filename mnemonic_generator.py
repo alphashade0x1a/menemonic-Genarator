@@ -5,8 +5,8 @@ from web3 import Web3
 from mnemonic import Mnemonic
 from eth_account import Account
 from dotenv import load_dotenv
-from aiohttp import ClientSession, ClientTimeout
-import csv
+from aiohttp import ClientSession, ClientTimeout, TCPConnector
+import time
 
 # Load environment variables
 load_dotenv()
@@ -15,21 +15,13 @@ load_dotenv()
 Account.enable_unaudited_hdwallet_features()
 
 # Set up logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("app.log"),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Constants
 INFURA_PROJECT_ID = os.getenv('INFURA_PROJECT_ID', 'your_actual_project_id')
 INFURA_URL = f'https://mainnet.infura.io/v3/{INFURA_PROJECT_ID}'
-RETRY_DELAY = int(os.getenv('RETRY_DELAY', '2'))
-MAX_CONCURRENT_TASKS = min(int(os.getenv('MAX_CONCURRENT_TASKS', str(os.cpu_count() * 2))), 50)
-MNEMONIC_STRENGTH = int(os.getenv('MNEMONIC_STRENGTH', '128'))
+RETRY_DELAY = 2  # seconds
+MAX_CONCURRENT_TASKS = os.cpu_count() * 2  # Adjust based on system capabilities
 
 # Connect to Ethereum network
 w3 = Web3(Web3.HTTPProvider(INFURA_URL))
@@ -38,9 +30,9 @@ if not w3.is_connected():
     raise SystemExit("Cannot connect to Ethereum network")
 
 # Function to generate a mnemonic phrase
-def generate_mnemonic(strength=MNEMONIC_STRENGTH):
+def generate_mnemonic():
     mnemo = Mnemonic("english")
-    return mnemo.generate(strength=strength)
+    return mnemo.generate(strength=128)
 
 # Function to create an Ethereum account from a mnemonic
 def mnemonic_to_private_key(mnemonic):
@@ -53,36 +45,29 @@ def mnemonic_to_private_key(mnemonic):
 
 # Asynchronous function to check account balance
 async def check_account_balance(session, address):
-    url = INFURA_URL
-    payload = {
-        'jsonrpc': '2.0',
-        'method': 'eth_getBalance',
-        'params': [address, 'latest'],
-        'id': 1
-    }
-    timeout = ClientTimeout(total=10)
     try:
+        url = INFURA_URL
+        payload = {
+            'jsonrpc': '2.0',
+            'method': 'eth_getBalance',
+            'params': [address, 'latest'],
+            'id': 1
+        }
+        timeout = ClientTimeout(total=10)  # Set timeout for requests
         async with session.post(url, json=payload, timeout=timeout) as response:
             if response.status != 200:
                 logging.error(f"HTTP error: {response.status}")
                 return False
-
             data = await response.json()
             logging.debug(f"Response data: {data}")
-            balance = int(data['result'], 16)
+            balance = int(data['result'], 16)  # Convert hex balance to integer
             return balance > 0
     except Exception as e:
         logging.error(f"Error checking balance for {address}: {e}")
         return False
 
-# Save successful mnemonics and addresses to a file
-def save_successful_mnemonic(mnemonic, address):
-    with open('successful_mnemonics.csv', mode='a') as file:
-        writer = csv.writer(file)
-        writer.writerow([mnemonic, address])
-
 # Worker function to generate mnemonic and attempt login
-async def try_login(session, semaphore):
+async def try_login(session):
     while True:
         mnemonic = generate_mnemonic()
         account = mnemonic_to_private_key(mnemonic)
@@ -93,24 +78,23 @@ async def try_login(session, semaphore):
 
         logging.info(f"Trying account: {account.address}")
 
-        async with semaphore:
-            if await check_account_balance(session, account.address):
-                logging.info(f"Successfully logged in with mnemonic: {mnemonic}")
-                save_successful_mnemonic(mnemonic, account.address)
-                return mnemonic  # Return the successful mnemonic
-
-        logging.info("Login failed, generating a new mnemonic...")
-        await asyncio.sleep(RETRY_DELAY)
+        if await check_account_balance(session, account.address):
+            logging.info(f"Successfully logged in with mnemonic: {mnemonic}")
+            return mnemonic  # Return the successful mnemonic
+        else:
+            logging.info("Login failed, generating a new mnemonic...")
+            await asyncio.sleep(RETRY_DELAY)  # Delay between retries
 
 # Main function to manage parallel workers
 async def main():
-    semaphore = asyncio.Semaphore(10)  # Adjust based on rate limit
-    connector = aiohttp.TCPConnector(limit=50)
-
+    # Initialize TCPConnector with a connection limit
+    connector = TCPConnector(limit=50)  # Adjust the limit as needed
     async with ClientSession(connector=connector) as session:
-        tasks = [asyncio.create_task(try_login(session, semaphore)) for _ in range(MAX_CONCURRENT_TASKS)]
+        # Use asyncio to handle multiple workers
+        tasks = [asyncio.create_task(try_login(session)) for _ in range(MAX_CONCURRENT_TASKS)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
+        # Find the first successful mnemonic
         for result in results:
             if isinstance(result, str):
                 logging.info(f"Successful mnemonic found: {result}")

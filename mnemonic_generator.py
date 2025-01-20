@@ -18,7 +18,7 @@ Account.enable_unaudited_hdwallet_features()
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Constants
-INFURA_PROJECT_ID = '426db37db1d047a5862bcada33e9c457'
+INFURA_PROJECT_ID = 'project id'
 INFURA_URL = f'https://mainnet.infura.io/v3/{INFURA_PROJECT_ID}'
 RETRY_DELAY = 2  # seconds
 MAX_CONCURRENT_TASKS = os.cpu_count() * 2  # Adjust based on system capabilities
